@@ -93,6 +93,10 @@ name = "fsqlite_core"
 path = "src/lib.rs"
 
 [[test]]
+name = "memdb_root_probe_cost"
+path = "tests/memdb_root_probe_cost.rs"
+
+[[test]]
 name = "adversarial_bit_flip"
 path = "tests/adversarial_bit_flip.rs"
 
