@@ -67,15 +67,24 @@ fn schema_query_probe_cost_does_not_grow_with_database_size() {
     build_database(&small, 50);
     build_database(&large, 2_000);
     assert!(page_count(&large) >= 2_000, "the large file has an occupied page per row");
+    let (small, large) = (small.clone(), large.clone());
 
-    let reads = std::cell::Cell::new((0, 0));
-    asupersync::test_utils::run_test(|| async {
-        reads.set((
-            probe_reads_for_schema_query(&small).await,
-            probe_reads_for_schema_query(&large).await,
-        ));
-    });
-    let (small_reads, large_reads) = reads.get();
+    // fsqlite's debug-build futures are larger than the default test stack.
+    let (small_reads, large_reads) = std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let reads = std::cell::Cell::new((0, 0));
+            asupersync::test_utils::run_test(|| async {
+                reads.set((
+                    probe_reads_for_schema_query(&small).await,
+                    probe_reads_for_schema_query(&large).await,
+                ));
+            });
+            reads.get()
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread");
     // One materialized table needs one clean root, found at the first page
     // past the end.
     assert!(small_reads <= 2, "small database: {small_reads} probe reads");
