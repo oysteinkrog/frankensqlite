@@ -70550,13 +70550,25 @@ impl Connection {
                 "requested too many temporary MemDatabase root pages: {need}"
             ))
         })?;
+        // Pages past the end of the database are clean by definition, so the
+        // probe starts there. Starting at the MemDatabase allocator (page 2 on
+        // a fresh connection) read every occupied page of the file one by one
+        // and kept the copies: on a 29 GB database one `sqlite_master` query
+        // read the whole file and grew the process past 11 GiB.
         let mut start = self.db.borrow().next_root_page();
+        if let Some(past_end) = i32::try_from(txn.live_db_size())
+            .ok()
+            .and_then(|size| size.checked_add(1))
+        {
+            start = start.max(past_end);
+        }
         let mut clean = 0_i32;
         while clean < needed {
             let page = start + clean;
             let Some(pgno) = u32::try_from(page).ok().and_then(PageNumber::new) else {
                 break;
             };
+            MEMDB_ROOT_PROBE_PAGE_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let is_clean = match txn.get_page(cx, pgno).await {
                 Ok(data) => data.as_ref().iter().all(|&b| b == 0),
                 Err(_) => true,
@@ -295210,4 +295222,17 @@ mod join_keyset_stream_tests {
             );
         });
     }
+}
+
+/// Pages read by the clean-root probe that runs before a `sqlite_master`,
+/// CTE or TEMP table is materialized in memory. Lets a test check that the
+/// probe cost does not grow with the database size.
+static MEMDB_ROOT_PROBE_PAGE_READS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Total pages read by the clean-root probe in this process.
+#[doc(hidden)]
+#[must_use]
+pub fn memdb_root_probe_page_reads() -> u64 {
+    MEMDB_ROOT_PROBE_PAGE_READS.load(std::sync::atomic::Ordering::Relaxed)
 }
